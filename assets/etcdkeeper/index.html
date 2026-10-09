@@ -26,10 +26,14 @@
 			border:1px solid #ddd;
 			font-size: 13px!important;
 		}
+		#jsonStatus { margin-left: 20px; }
+		#jsonStatus.ok { color: #2e7d32; }
+		#jsonStatus.bad { color: #c62828; font-weight: bold; }
+		.tree-more .tree-title { color: #00a0e9; font-style: italic; }
 	</style>
 </head>
 <body style="overflow: hidden;">
-	<h2><img src="../etcdkeeper/framework/logo.png" width="20" style="position:relative;top:3px;"></img><font color="00a0e9"> ETCD</font> Keeper <span id="ver" style="border: 1px solid #D4D4D4;border-radius: 5px;cursor:pointer;">v3</span></h2>
+	<h2><img src="../etcdkeeper/framework/logo.png" width="20" style="position:relative;top:3px;"></img><font color="00a0e9"> ETCD</font> Keeper <span id="ver" style="border: 1px solid #D4D4D4;border-radius: 5px;">v3</span></h2>
 	<div class="noborder">
 		<img id="userButton" src="../etcdkeeper/framework/easyui/themes/icons/user.png" width="20" style="position:relative;top:7px;cursor:pointer;"></img>
 		<input id="etcdAddr" class="easyui-textbox" data-options="prompt:'127.0.0.1:2379',onChange:changeHost,iconCls:'icon-server',iconAlign:'left'" style="width:360px;height:30px;"/>
@@ -44,7 +48,7 @@
 		</div>
 	</div>
 
-	<div id="footer" style="padding:5px;color:#777;">&nbsp;</div>
+	<div id="footer" style="padding:5px;color:#777;"><span id="meta">&nbsp;</span><span id="jsonStatus"></span><span id="showMode" style="position: absolute;right: 10px;color: #777;"></span></div>
 	<div id="westTools">
 		<a href="javascript:void(0)" class="icon-path" style="margin-right:4px;" onclick="changeTreeMode();" title="Tree mode"></a>
 		<a href="javascript:void(0)" class="icon-reload" onclick="connect();" title="Refresh tree"></a>
@@ -117,7 +121,7 @@
 		<span id="statusVersion"></span>
 		<span id="statusSize" style="margin-left: 10px;"></span>
 		<span id="statusMember" style="margin-left: 10px;"></span>
-		<span style="margin-left: 10px;">ETCD Keeper 0.7.8</span>
+		<span id="keeperVersion" style="margin-left: 10px;">ETCD Keeper</span>
 	</div>
 
 	<div id="modeMenu" style="">
@@ -131,11 +135,6 @@
 		<div id="mode_json" onclick="changeMode('json')">json</div>
 	</div>
 
-    <div id="versionMenu" class="easyui-menu">
-        <div id="version_3" onclick="selVersion('3')">version 3</div>
-        <div id="version_2" onclick="selVersion('2')">version 2</div>
-    </div>
-
 	<script>
 		resizeWindow();
 		$(window).resize(function(){ // FIXME: invalid
@@ -146,7 +145,7 @@
 			$('#elayout').height(($(window).height() - 128) + 'px')
 		}
 
-		var timeout = 5000 // milliseconds
+		var timeout = 30000 // milliseconds; trees are paged, so one request stays small
 		var separator = '';
 		var serverBase = '../v3';
 		var etcdBase = Cookies.get('etcd-endpoint');
@@ -154,73 +153,36 @@
 			etcdBase = '127.0.0.1:2379';
 		}
 
-        // version switch
-        var version = Cookies.get('etcd-version');
-        if(typeof(version) === 'undefined') {
-            version = '3';
-        }
-        setServerBase(version);
-        $(function(){
-            $('#ver').bind('click',function(e){
-                e.preventDefault();
-                $('#versionMenu').menu('show', {
-                    left: e.pageX,
-                    top: e.pageY
-                });
-            });
+		$(function(){
 			$('#userButton').bind('click',function(e){
-                $('#userinfo').window('open');
-            });
-        });
-        function selVersion(ver) {
-            setServerBase(ver);
-            version = ver;
-            connect();
-            Cookies.set('etcd-version', version, {expires: 30});
-
-            $('#versionMenu').menu('setIcon', {
-                target: $('#version_2')[0],
-                iconCls: ''
-            });
-            $('#versionMenu').menu('setIcon', {
-                target: $('#version_3')[0],
-                iconCls: ''
-            });
-            $('#versionMenu').menu('setIcon', {
-                target: $('#version_' + ver)[0],
-                iconCls: 'icon-ok'
-            });
-        }
-        function setServerBase(ver) {
-            if (ver === '3') {
-                $('#ver').html('v3');
-                serverBase = '../v3';
-            } else {
-                $('#ver').html('v2');
-                serverBase = '../v2';
-            }
-        }
+				$('#userinfo').window('open');
+			});
+			$.get('../version', function(v) {
+				$('#keeperVersion').text('ETCD Keeper ' + v);
+			}, 'text');
+		});
 
 		var tree = [];
 		var idCount = 0;
 		var editor = ace.edit('value');
-        editor.$blockScrolling = Infinity;
+		editor.$blockScrolling = Infinity;
 		var curIconMode = 'mode_icon_text';
-		var aceMode = Cookies.get('ace-mode');
-		if (typeof(aceMode) === 'undefined') {
-			aceMode = 'text';
+		// aceMode is the mode in use; userMode is the one picked in the Mode menu (kept in a cookie).
+		// A value that looks like JSON is shown in json mode without changing userMode.
+		var userMode = Cookies.get('ace-mode');
+		if (typeof(userMode) === 'undefined') {
+			userMode = 'text';
 		}
+		var aceMode = userMode;
 		var treeMode = Cookies.get('tree-mode');
 		if (typeof(treeMode) === 'undefined') {
 			treeMode = 'list';
 		}
-		if (version === '2') {
-		    treeMode = 'path'
-		}
-		//var autoFormat = Cookies.get('auto-format');
-		//if(typeof(autoFormat) === 'undefined') {
-			//autoFormat = 'false';
-		//}
+		var jsonCheckTimer = null;
+		editor.getSession().on('change', function() {
+			clearTimeout(jsonCheckTimer);
+			jsonCheckTimer = setTimeout(updateJsonStatus, 300);
+		});
 
 		// get separator
 		$.ajax({
@@ -240,13 +202,8 @@
 
 		$(document).ready(function() {
 			editor.setTheme('ace/theme/github');
-			editor.getSession().setMode('ace/mode/' + aceMode);
-			changeMode(aceMode);
+			setEditorMode(aceMode);
 			init();
-            $('#versionMenu').menu('setIcon', {
-                target: $('#version_' + version)[0],
-                iconCls: 'icon-ok'
-            });
 		});
 
 		function init() {
@@ -344,10 +301,15 @@
 			$('#elayout').layout('panel','center').panel('setTitle', separator);
 			editor.getSession().setValue('');
 			editor.setReadOnly(false);
-			$('#footer').html('&nbsp;');
+			$('#meta').html('&nbsp;');
+			updateJsonStatus();
 		}
 
 		function showNode(node) {
+			if (node.more) {
+				loadMore(node);
+				return;
+			}
 			$('#elayout').layout('panel','center').panel('setTitle', node.path);
 			editor.getSession().setValue('');
 			if (node.dir === false) {
@@ -366,15 +328,12 @@
 							resetValue()
 						} else {
 							editor.getSession().setValue(data.node.value);
-							//if (autoFormat === 'true') {
-								//format(aceMode);
-							//}
 							var ttl = 0;
 							if (data.node.ttl) {
 								ttl = data.node.ttl;
 							}
 							changeFooter(ttl, data.node.createdIndex, data.node.modifiedIndex);
-							changeModeBySuffix(node.path);
+							pickModeForValue(node.path, data.node.value);
 						}
 					},
 					error: function(err) {
@@ -385,65 +344,105 @@
 				if (node.children.length > 0) {
 					$('#etree').tree(node.state === 'closed' ? 'expand' : 'collapse', node.target);
 				}
-				if (version === '2') {
-					if (node.state === 'closed') {
-						return
+
+				$('#meta').html('&nbsp;');
+				// direct children only (getChildren would return the whole subtree)
+				var children = directChildren(node);
+				fetchChildren(node.path, '', function(data) {
+					if (data.node.value) {
+						editor.getSession().setValue(data.node.value);
+						changeFooter(data.node.ttl, data.node.createdIndex, data.node.modifiedIndex);
+						pickModeForValue(node.path, data.node.value);
 					}
-					editor.setReadOnly(true);
-                }
-
-				$('#footer').html('&nbsp;');
-				// clear child node
-				var children = $('#etree').tree('getChildren', node.target);
-				//if (node.state === 'closed' || children.length === 0) {
-
-				//}
-				var url = '';
-				if (treeMode === 'list') {
-					url = serverBase + '/get';
-				} else {
-					url = serverBase + '/getpath';
-				}
-				$.ajax({
-					type: 'GET',
-					timeout: timeout,
-					url:  url,
-					data: {'key': node.path, 'prefix': 'true'},
-					async: true,
-					dataType: 'json',
-					success: function(data) {
-						if (data.errorCode) {
-							$.messager.alert('Error', data.message, 'error');
-						} else {
-							if (data.node.value) {
-								editor.getSession().setValue(data.node.value);
-								changeFooter(data.node.ttl, data.node.createdIndex, data.node.modifiedIndex);
-								changeModeBySuffix(node.path);
-							}
-							var arr = [];
-
-							if (data.node.nodes) {
-								// refresh child node
-								for (var i in data.node.nodes) {
-									var newData = getNode(data.node.nodes[i]);
-									arr.push(newData);
-								}
-								$('#etree').tree('append', {
-									parent: node.target,
-									data: arr
-								});
-							}
-
-							for(var n in children) {
-								$('#etree').tree('remove', children[n].target);
-							}
-						}
-					},
-					error: function(err) {
-						$.messager.alert('Error',$.toJSON(err),'error');
+					for (var n in children) {
+						$('#etree').tree('remove', children[n].target);
 					}
+					appendChildren(node, data.node);
 				});
 			}
+		}
+
+		// fetchChildren loads one page of children of key; after is the cursor of the previous page.
+		function fetchChildren(key, after, done) {
+			$.ajax({
+				type: 'GET',
+				timeout: timeout,
+				url:  serverBase + (treeMode === 'list' ? '/get' : '/getpath'),
+				data: {'key': key, 'prefix': 'true', 'after': after},
+				async: true,
+				dataType: 'json',
+				success: function(data) {
+					if (data.errorCode) {
+						$.messager.alert('Error', data.message, 'error');
+					} else {
+						done(data);
+					}
+				},
+				error: function(err) {
+					$.messager.alert('Error',$.toJSON(err),'error');
+				}
+			});
+		}
+
+		// appendChildren adds one page under parent, merging a key that was a leaf on an
+		// earlier page and turns out to be a directory, and ends with a "load more" node.
+		function appendChildren(parent, page) {
+			var existing = {};
+			var siblings = directChildren(parent);
+			for (var s in siblings) {
+				existing[siblings[s].path] = siblings[s];
+			}
+			var arr = [];
+			for (var i in page.nodes) {
+				var n = page.nodes[i];
+				var old = existing[n.key];
+				if (old) {
+					if (n.dir && !old.dir) {
+						$('#etree').tree('update', {target: old.target, iconCls: 'icon-dir', state: 'closed'});
+						old.dir = true;
+					}
+					continue;
+				}
+				arr.push(getNode(n));
+			}
+			if (page.more) {
+				arr.push({
+					id:      getId(),
+					text:    'load more ...',
+					iconCls: 'icon-more',
+					more:    true,
+					next:    page.next,
+					parentPath: page.key,
+					children: []
+				});
+			}
+			if (arr.length > 0) {
+				$('#etree').tree('append', {parent: parent.target, data: arr});
+			}
+			if (page.more) {
+				var kids = directChildren(parent);
+				$(kids[kids.length - 1].target).addClass('tree-more');
+			}
+		}
+
+		function directChildren(node) {
+			var all = $('#etree').tree('getChildren', node.target);
+			var direct = [];
+			for (var i in all) {
+				if ($('#etree').tree('getParent', all[i].target).id === node.id) {
+					direct.push(all[i]);
+				}
+			}
+			return direct;
+		}
+
+		function loadMore(moreNode) {
+			var parent = $('#etree').tree('getParent', moreNode.target);
+			$('#etree').tree('update', {target: moreNode.target, text: 'loading ...'});
+			fetchChildren(moreNode.parentPath, moreNode.next, function(data) {
+				$('#etree').tree('remove', moreNode.target);
+				appendChildren(parent, data.node);
+			});
 		}
 
 		function getNode(n) {
@@ -478,19 +477,13 @@
 
 		function showMenu(e, node) {
 			e.preventDefault();
+			if (node.more) {
+				return;
+			}
 			$('#etree').tree('select',node.target);
 			var mid = "treeNodeMenu";
-			if (treeMode === 'path') {
+			if (treeMode === 'path' || node.dir === true) {
 				mid = 'treeDirMenu';
-				if (version === '2') {
-                    if (node.dir !== true) {
-                        mid = "treeNodeMenu";
-                    }
-				}
-			} else {
-				if (node.dir === true) {
-					mid = 'treeDirMenu';
-				}
 			}
 			$('#' + mid).menu('show',{
 				left: e.pageX,
@@ -500,11 +493,32 @@
 
 		function saveValue() {
 			var node = $('#etree').tree('getSelected');
+			if (node === null || node.more) {
+				return;
+			}
+			var value = editor.getValue();
+			if (aceMode === 'json' || looksLikeJson(value)) {
+				var err = jsonError(value);
+				if (err !== null) {
+					editor.gotoLine(err.line, err.column - 1, true);
+					editor.focus();
+					$.messager.confirm('Invalid JSON', escapeHtml(err.text) + '<br><br>Save anyway?', function(r) {
+						if (r) {
+							putValue(node, value);
+						}
+					});
+					return;
+				}
+			}
+			putValue(node, value);
+		}
+
+		function putValue(node, value) {
 			$.ajax({
 				type: 'PUT',
 				timeout: timeout,
 				url:  serverBase + '/put',
-				data: {'key': node.path, 'value':editor.getValue()},
+				data: {'key': node.path, 'value': value},
 				async: true,
 				dataType: 'json',
 				success: function(data) {
@@ -526,7 +540,26 @@
 			});
 		}
 
+		// createNode checks a JSON-looking value (or a *.json name) before creating the key.
 		function createNode() {
+			var value = $('#cvalue').textbox('getValue');
+			var name = $('#name').textbox('getValue').trim();
+			var isDir = $('#dir').combobox('getValue') === 'true';
+			if (!isDir && (looksLikeJson(value) || /\.json$/i.test(name))) {
+				var err = jsonError(value);
+				if (err !== null) {
+					$.messager.confirm('Invalid JSON', escapeHtml(err.text) + '<br><br>Create anyway?', function(r) {
+						if (r) {
+							doCreateNode();
+						}
+					});
+					return;
+				}
+			}
+			doCreateNode();
+		}
+
+		function doCreateNode() {
 			var node = $('#etree').tree('getSelected');
 			var nodePath = node.path;
 			if (nodePath === separator) {
@@ -646,12 +679,10 @@
 									preObj = obj;
 									prePath = obj.path;
 								}
-								if (version === '3') {
-                                    $('#etree').tree('update', {
-                                        target: node.target,
-                                        iconCls: 'icon-dir'
-                                    });
-								}
+								$('#etree').tree('update', {
+									target: node.target,
+									iconCls: 'icon-dir'
+								});
                                 $('#etree').tree('append', {
 									parent: node.target,
 									data: newData
@@ -700,14 +731,12 @@
 
 								$('#etree').tree('remove', node.target);
 
-								if (version === '3') {
-                                    var isLeaf = $('#etree').tree('isLeaf', pnode.target);
-                                    if (isLeaf && pnode.text !== separator) {
-                                        $('#etree').tree('update', {
-                                            target: pnode.target,
-                                            iconCls: 'icon-text'
-                                        });
-                                    }
+								var isLeaf = $('#etree').tree('isLeaf', pnode.target);
+								if (isLeaf && pnode.text !== separator) {
+									$('#etree').tree('update', {
+										target: pnode.target,
+										iconCls: 'icon-text'
+									});
 								}
 							} else {
 								$.messager.alert('Error', data, 'error');
@@ -746,60 +775,178 @@
 			return idCount++;
 		}
 
+		// changeMode is the Mode menu: the choice is remembered in a cookie.
 		function changeMode(mode) {
+			userMode = mode;
+			Cookies.set('ace-mode', userMode, {expires: 30});
+			setEditorMode(mode);
+		}
+
+		function setEditorMode(mode) {
 			aceMode = mode;
-			Cookies.set('ace-mode', aceMode, {expires: 30});
 			$('#' + curIconMode).remove();
 			editor.getSession().setMode('ace/mode/' + aceMode);
 			curIconMode = 'mode_icon_' + aceMode;
 			$('#mode_' + mode).append('<div id="' + curIconMode + '" class="menu-icon icon-ok"></div>');
 			$('#showMode').html(aceMode);
+			updateJsonStatus();
 		}
 
 		function changeFooter(ttl, cIndex, mIndex) {
-			$('#footer').html('<span>TTL&nbsp;:&nbsp;' + ttl + '&nbsp;&nbsp;&nbsp;&nbsp;CreateRevision&nbsp;:&nbsp;' + cIndex + '&nbsp;&nbsp;&nbsp;&nbsp;ModRevision&nbsp;:&nbsp;' + mIndex + '</span><span id="showMode" style="position: absolute;right: 10px;color: #777;">' + aceMode + '</span>');
+			$('#meta').html('TTL&nbsp;:&nbsp;' + ttl + '&nbsp;&nbsp;&nbsp;&nbsp;CreateRevision&nbsp;:&nbsp;' + cIndex + '&nbsp;&nbsp;&nbsp;&nbsp;ModRevision&nbsp;:&nbsp;' + mIndex);
+			$('#showMode').html(aceMode);
 		}
 
 		function format(type) {
-			if (type === 'json') {
-				val = JSON.parse(editor.getValue());
-				editor.setValue(JSON.stringify(val, null, 4));
-				editor.getSession().setMode('ace/mode/' + 'json');
+			if (type === 'json' || looksLikeJson(editor.getValue())) {
+				var err = jsonError(editor.getValue());
+				if (err !== null) {
+					editor.gotoLine(err.line, err.column - 1, true);
+					$.messager.alert('Invalid JSON', escapeHtml(err.text), 'error');
+					return;
+				}
+				editor.setValue(JSON.stringify(JSON.parse(editor.getValue()), null, 4));
+				setEditorMode('json');
 				editor.clearSelection();
 				editor.navigateFileStart();
 			}
 		}
 
 		function changeTreeMode() {
-		    if (version === '2') {
-		        treeMode = 'path';
-                alertMessage('Etcd v2 only supports directory mode.');
+			if (treeMode === 'list') {
+				treeMode = 'path';
 			} else {
-                if (treeMode === 'list') {
-                    treeMode = 'path';
-                } else {
-                    treeMode = 'list';
-                }
-                Cookies.set('tree-mode', treeMode, {expires: 30});
-                connect();
+				treeMode = 'list';
+			}
+			Cookies.set('tree-mode', treeMode, {expires: 30});
+			connect();
+		}
+
+		// pickModeForValue: a known file suffix wins, then JSON-looking content, else the menu choice.
+		function pickModeForValue(path, value) {
+			var a = path.split(separator);
+			var tokens = a[a.length - 1].split('.');
+			if (tokens.length >= 2) {
+				var suffix = tokens[tokens.length - 1];
+				var modes = $('#modeMenu').children();
+				for (var i = 0; i < modes.length; i++) {
+					if (modes[i].innerText === suffix) {
+						setEditorMode(suffix);
+						return;
+					}
+				}
+			}
+			setEditorMode(looksLikeJson(value) ? 'json' : userMode);
+		}
+
+		function looksLikeJson(text) {
+			var t = $.trim(text || '');
+			return t.charAt(0) === '{' || t.charAt(0) === '[';
+		}
+
+		// jsonError returns null for valid JSON, else {text, line, column} (1-based). The position
+		// comes from a small scanner because browsers word (and sometimes omit) it differently.
+		function jsonError(text) {
+			try {
+				JSON.parse(text);
+				return null;
+			} catch (e) {
+				var at = jsonErrorOffset(text);
+				var before = text.substring(0, at).split('\n');
+				var line = before.length, column = before[before.length - 1].length + 1;
+				var near = text.substring(at, at + 20).split('\n')[0];
+				var where = at >= text.length ? ' (unexpected end)' : (near ? ' near "' + near + '"' : ' (at end of line)');
+				// the browser's own wording, minus the position and quoted input it may append
+				var why = e.message.split('\n')[0].replace(/ in JSON at position.*$/, '').replace(/, (\.\.\.)?".*$/, '');
+				return {
+					text: 'line ' + line + ' column ' + column + where + ': ' + why,
+					line: line,
+					column: column
+				};
 			}
 		}
 
-		function changeModeBySuffix(path) {
-			var a = path.split(separator);
-			var tokens = a.slice(a.length-1,a.lenght)[0].split('.');
-			if (tokens.length < 2) {
-				return
-			}
-			var mode = tokens[tokens.length-1];
-			var modes = $('#modeMenu').children();
-			for (var i=0;i<modes.length;i++) {
-				m = modes[i].innerText;
-				if (mode === m) {
-					changeMode(m);
-					return
+		// jsonErrorOffset returns the offset where a strict JSON parse first fails.
+		function jsonErrorOffset(t) {
+			var i = 0;
+			function fail() { throw i; }
+			function ws() { while (i < t.length && ' \t\n\r'.indexOf(t.charAt(i)) >= 0) i++; }
+			function lit(w) { if (t.substr(i, w.length) !== w) fail(); i += w.length; }
+			function str() {
+				i++;
+				while (i < t.length) {
+					var c = t.charAt(i);
+					if (c === '"') { i++; return; }
+					if (c < ' ') fail();
+					if (c === '\\') {
+						i++;
+						var esc = t.charAt(i);
+						if (esc === 'u') { if (!/^[0-9a-fA-F]{4}$/.test(t.substr(i + 1, 4))) fail(); i += 4; }
+						else if ('"\\/bfnrt'.indexOf(esc) < 0 || esc === '') fail();
+					}
+					i++;
 				}
+				fail();
 			}
+			function num() {
+				var m = /^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?/.exec(t.substring(i));
+				if (m === null || m[0] === '' || m[0] === '-') fail();
+				i += m[0].length;
+			}
+			function val() {
+				ws();
+				var c = t.charAt(i);
+				if (c === '{') {
+					i++; ws();
+					if (t.charAt(i) === '}') { i++; return; }
+					for (;;) {
+						ws(); if (t.charAt(i) !== '"') fail(); str();
+						ws(); if (t.charAt(i) !== ':') fail(); i++;
+						val(); ws();
+						if (t.charAt(i) === ',') { i++; continue; }
+						if (t.charAt(i) === '}') { i++; return; }
+						fail();
+					}
+				} else if (c === '[') {
+					i++; ws();
+					if (t.charAt(i) === ']') { i++; return; }
+					for (;;) {
+						val(); ws();
+						if (t.charAt(i) === ',') { i++; continue; }
+						if (t.charAt(i) === ']') { i++; return; }
+						fail();
+					}
+				} else if (c === '"') { str(); }
+				else if (c === 't') { lit('true'); }
+				else if (c === 'f') { lit('false'); }
+				else if (c === 'n') { lit('null'); }
+				else { num(); }
+			}
+			try {
+				val(); ws();
+				return i < t.length ? i : t.length;
+			} catch (pos) {
+				return typeof pos === 'number' ? pos : 0;
+			}
+		}
+
+		function updateJsonStatus() {
+			var el = $('#jsonStatus');
+			var value = editor.getValue();
+			if (aceMode !== 'json' || $.trim(value) === '') {
+				el.removeClass('ok bad').text('');
+				return;
+			}
+			var err = jsonError(value);
+			if (err === null) {
+				el.removeClass('bad').addClass('ok').text('JSON valid');
+			} else {
+				el.removeClass('ok').addClass('bad').text('JSON error: ' + err.text);
+			}
+		}
+
+		function escapeHtml(s) {
+			return $('<div>').text(s).html();
 		}
 
 		function userOK() {
