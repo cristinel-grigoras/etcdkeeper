@@ -21,3 +21,6 @@ release
 # Package Files
 *.war
 *.ear
+
+# docker build cache (build.sh)
+.gocache
